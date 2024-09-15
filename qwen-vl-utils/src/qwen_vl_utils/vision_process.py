@@ -10,6 +10,9 @@ from PIL import Image
 from torchvision import io, transforms
 from torchvision.transforms import InterpolationMode
 
+import numpy as np
+from decord import VideoReader, cpu
+
 
 IMAGE_FACTOR = 28
 MIN_PIXELS = 4 * 28 * 28
@@ -122,13 +125,16 @@ def fetch_video(ele: dict, image_factor: int = IMAGE_FACTOR) -> torch.Tensor | l
         if video.startswith("file://"):
             video = video[7:]
 
-        video, audio, info = io.read_video(
-            video,
-            start_pts=ele.get("video_start", 0.0),
-            end_pts=ele.get("video_end", None),
-            pts_unit="sec",
-            output_format="TCHW",
-        )
+        # video, audio, info = io.read_video(
+        #     video,
+        #     start_pts=ele.get("video_start", 0.0),
+        #     end_pts=ele.get("video_end", None),
+        #     pts_unit="sec",
+        #     output_format="TCHW",
+        # )
+        vr = VideoReader(ele["video"], ctx=cpu(0))
+        total_frame_num = len(vr)
+        video_fps = round(vr.get_avg_fps())
 
         assert not ("fps" in ele and "nframes" in ele), "Only accept either `fps` or `nframes`"
         if "nframes" in ele:
@@ -136,16 +142,22 @@ def fetch_video(ele: dict, image_factor: int = IMAGE_FACTOR) -> torch.Tensor | l
         else:
             fps = ele.get("fps", FPS)
             min_frames = ceil_by_factor(ele.get("min_frames", FPS_MIN_FRAMES), FRAME_FACTOR)
-            max_frames = floor_by_factor(ele.get("max_frames", min(FPS_MAX_FRAMES, video.size(0))), FRAME_FACTOR)
-            nframes = video.size(0) / info["video_fps"] * fps
+            max_frames = floor_by_factor(ele.get("max_frames", min(FPS_MAX_FRAMES, total_frame_num)), FRAME_FACTOR)
+            nframes = total_frame_num / video_fps * fps
             nframes = min(max(nframes, min_frames), max_frames)
             nframes = round_by_factor(nframes, FRAME_FACTOR)
-        if not (FRAME_FACTOR <= nframes and nframes <= video.size(0)):
-            raise ValueError(f"nframes should in interval [{FRAME_FACTOR}, {video.size(0)}], but got {nframes}.")
+        # if not (FRAME_FACTOR <= nframes and nframes <= video.size(0)):
+        #     raise ValueError(f"nframes should in interval [{FRAME_FACTOR}, {video.size(0)}], but got {nframes}.")
+        if not (FRAME_FACTOR <= nframes and nframes <= total_frame_num):
+            raise ValueError(f"nframes should in interval [{FRAME_FACTOR}, {total_frame_num}], but got {nframes}.")
 
-        idx = torch.linspace(0, video.size(0) - 1, nframes).round().long()
+        # idx = torch.linspace(0, video.size(0) - 2, nframes).round().long()
+        # video = video[idx]
+        frame_idx = np.linspace(0, total_frame_num - 2, nframes, dtype=int)
+        spare_frames = vr.get_batch(frame_idx).asnumpy()
+        video = torch.from_numpy(spare_frames).permute(0, 3, 1, 2)
         height, width = video.shape[2:]
-        video = video[idx]
+        # video = video[idx]
 
         min_pixels = ele.get("min_pixels", VIDEO_MIN_PIXELS)
         total_pixels = ele.get("total_pixels", VIDEO_TOTAL_PIXELS)
